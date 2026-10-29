@@ -12,6 +12,7 @@ export class AudioRecorder {
   private sourceNode: MediaStreamAudioSourceNode | null = null;
   private processorNode: ScriptProcessorNode | null = null;
   private isRecording: boolean = false;
+  private isMuted: boolean = false;
   private targetSampleRate: number;
   private onAudioData: (pcmBase64: string, rawPcm: Int16Array) => void;
   private onVolumeChange?: (volume: number) => void;
@@ -41,14 +42,18 @@ export class AudioRecorder {
       });
 
       // Initialize AudioContext (safely fall back to default rate if 16kHz is unsupported by hardware)
-      const AudioCtx = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const AudioCtx =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       try {
         this.audioContext = new AudioCtx({ sampleRate: this.targetSampleRate });
       } catch {
         this.audioContext = new AudioCtx();
       }
 
-      console.log(`[AudioRecorder] Initialized at ${this.audioContext.sampleRate}Hz (resampling to ${this.targetSampleRate}Hz).`);
+      console.log(
+        `[AudioRecorder] Initialized at ${this.audioContext.sampleRate}Hz (resampling to ${this.targetSampleRate}Hz).`
+      );
 
       if (this.audioContext.state === "suspended") {
         await this.audioContext.resume();
@@ -60,7 +65,10 @@ export class AudioRecorder {
       this.processorNode = this.audioContext.createScriptProcessor(4096, 1, 1);
 
       this.processorNode.onaudioprocess = (e: AudioProcessingEvent) => {
-        if (!this.isRecording) return;
+        if (!this.isRecording || this.isMuted) {
+          this.onVolumeChange?.(0);
+          return;
+        }
 
         const inputChannelData = e.inputBuffer.getChannelData(0);
         const sourceSampleRate = this.audioContext?.sampleRate || this.targetSampleRate;
@@ -99,14 +107,28 @@ export class AudioRecorder {
       silenceGain.connect(this.audioContext.destination);
 
       this.isRecording = true;
+      this.isMuted = false;
     } catch (err) {
       this.stop();
       throw err;
     }
   }
 
+  public setMuted(muted: boolean): void {
+    this.isMuted = muted;
+    if (this.mediaStream) {
+      this.mediaStream.getAudioTracks().forEach((track) => {
+        track.enabled = !muted;
+      });
+    }
+    if (muted && this.onVolumeChange) {
+      this.onVolumeChange(0);
+    }
+  }
+
   public stop(): void {
     this.isRecording = false;
+    this.isMuted = false;
 
     if (this.processorNode) {
       this.processorNode.disconnect();
@@ -136,6 +158,10 @@ export class AudioRecorder {
 
   get active(): boolean {
     return this.isRecording;
+  }
+
+  get muted(): boolean {
+    return this.isMuted;
   }
 
   private resampleAudio(

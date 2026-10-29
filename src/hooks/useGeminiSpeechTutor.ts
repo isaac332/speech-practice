@@ -21,6 +21,7 @@ export interface MessageTurn {
   role: "user" | "tutor";
   text: string;
   timestamp: number;
+  interrupted?: boolean;
 }
 
 export interface DebugLog {
@@ -28,6 +29,16 @@ export interface DebugLog {
   timestamp: string;
   level: "info" | "warn" | "error";
   message: string;
+}
+
+export interface ConnectOverrides {
+  apiKey?: string;
+  model?: string;
+  personaId?: string;
+  voice?: GeminiLiveVoice;
+  enableThinking?: boolean;
+  customInstructions?: string;
+  forceReconnect?: boolean;
 }
 
 export interface UseGeminiSpeechTutorOptions {
@@ -44,6 +55,7 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
   const [status, setStatus] = useState<TutorStatus>("disconnected");
   const [tutorState, setTutorState] = useState<TutorState>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [activeConnectedModel, setActiveConnectedModel] = useState<string | null>(null);
 
   const [selectedModel, setSelectedModel] = useState<string>(
     optionModel || process.env.NEXT_PUBLIC_GEMINI_LIVE_MODEL || "gemini-3.8-live"
@@ -54,6 +66,9 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
   const [selectedVoice, setSelectedVoice] = useState<GeminiLiveVoice>(
     options?.initialVoice || GEMINI_LIVE_VOICES.AOEDE
   );
+  const [enableThinking, setEnableThinking] = useState<boolean>(true);
+  const [customInstructions, setCustomInstructions] = useState<string>("");
+  const [isMuted, setIsMuted] = useState<boolean>(false);
 
   const [userVolume, setUserVolume] = useState<number>(0);
   const [tutorVolume, setTutorVolume] = useState<number>(0);
@@ -73,6 +88,9 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
   // Keep latest text values in ref to avoid stale closures in callbacks
   const currentUserTextRef = useRef<string>("");
   const currentTutorTextRef = useRef<string>("");
+  const connectRef = useRef<((overrideOrKey?: string | ConnectOverrides) => Promise<void>) | null>(
+    null
+  );
 
   const addLog = useCallback((message: string, level: "info" | "warn" | "error" = "info") => {
     const timestamp = new Date().toLocaleTimeString();
@@ -89,6 +107,41 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
 
   const updateTutorState = useCallback((newState: TutorState) => {
     setTutorState(newState);
+  }, []);
+
+  const flushUserTurn = useCallback(() => {
+    const finalUserText = currentUserTextRef.current.trim();
+    if (finalUserText) {
+      setTurns((prev) => [
+        ...prev,
+        {
+          id: `turn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}-user`,
+          role: "user",
+          text: finalUserText,
+          timestamp: Date.now(),
+        },
+      ]);
+      currentUserTextRef.current = "";
+      setCurrentUserText("");
+    }
+  }, []);
+
+  const flushTutorTurn = useCallback((wasInterrupted: boolean = false) => {
+    const finalTutorText = currentTutorTextRef.current.trim();
+    if (finalTutorText) {
+      setTurns((prev) => [
+        ...prev,
+        {
+          id: `turn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}-tutor`,
+          role: "tutor",
+          text: finalTutorText,
+          timestamp: Date.now(),
+          interrupted: wasInterrupted,
+        },
+      ]);
+      currentTutorTextRef.current = "";
+      setCurrentTutorText("");
+    }
   }, []);
 
   const disconnect = useCallback(async (preserveError: boolean = false) => {
@@ -112,21 +165,40 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
         setStatus("disconnected");
         setErrorMessage(null);
       }
+      setActiveConnectedModel(null);
       setTutorState("idle");
+      setIsMuted(false);
       setUserVolume(0);
       setTutorVolume(0);
     }
   }, []);
 
   const connect = useCallback(
-    async (overrideApiKey?: string) => {
-      if (status === "connecting" || status === "connected") return;
+    async (overrideOrKey?: string | ConnectOverrides) => {
+      const overrides: ConnectOverrides =
+        typeof overrideOrKey === "string" ? { apiKey: overrideOrKey } : overrideOrKey || {};
 
-      const resolvedApiKey =
-        overrideApiKey ||
+      if ((status === "connecting" || status === "connected") && !overrides.forceReconnect) {
+        return;
+      }
+
+      if (overrides.forceReconnect && (status === "connecting" || status === "connected")) {
+        addLog("Switching configuration on the fly — closing previous session...", "info");
+        await disconnect(false);
+      }
+
+      const resolvedApiKey = (
+        overrides.apiKey ||
         optionApiKey ||
         process.env.NEXT_PUBLIC_GEMINI_API_KEY ||
-        "";
+        ""
+      ).trim();
+
+      const targetModel = (overrides.model ?? selectedModel).trim() || "gemini-3.8-live";
+      const targetPersonaId = overrides.personaId ?? selectedPersonaId;
+      const targetVoice = overrides.voice ?? selectedVoice;
+      const useThinking = overrides.enableThinking ?? enableThinking;
+      const extraInstructions = (overrides.customInstructions ?? customInstructions).trim();
 
       if (!resolvedApiKey) {
         const msg = "Please enter your Gemini API Key in the settings drawer to connect.";
@@ -139,16 +211,20 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
       setErrorMessage(null);
       setStatus("connecting");
       setTutorState("idle");
+      setIsMuted(false);
       setCurrentThought("");
       setCurrentUserText("");
       setCurrentTutorText("");
       currentUserTextRef.current = "";
       currentTutorTextRef.current = "";
 
-      addLog(`Connecting session to Gemini Live API with model "${selectedModel}"...`, "info");
+      addLog(`Connecting session to Gemini Live API with model "${targetModel}"...`, "info");
 
       try {
-        const persona = TUTOR_PERSONAS[selectedPersonaId] || TUTOR_PERSONAS.casual;
+        const persona = TUTOR_PERSONAS[targetPersonaId] || TUTOR_PERSONAS.casual;
+        const fullSystemInstruction = extraInstructions
+          ? `${persona.systemInstruction}\n\nAdditional Practice Scenario / Context:\n${extraInstructions}`
+          : persona.systemInstruction;
 
         // Initialize Audio Player
         addLog("Initializing Web Audio Player (24kHz PCM)...", "info");
@@ -167,21 +243,25 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
 
         // Prepare live config
         const liveConfig: Record<string, unknown> = {
-          model: selectedModel,
+          model: targetModel,
           responseModalities: ["AUDIO"],
           speechConfig: {
-            voiceName: selectedVoice,
+            voiceName: targetVoice,
           },
-          systemInstruction: persona.systemInstruction,
-          thinkingConfig: {
-            thinkingBudget: 1024,
-            includeThoughts: true,
-          },
+          systemInstruction: fullSystemInstruction,
           inputAudioTranscription: {},
           outputAudioTranscription: {},
         };
 
-        if (resumptionHandle) {
+        if (useThinking) {
+          liveConfig.thinkingConfig = {
+            thinkingBudget: 1024,
+            includeThoughts: true,
+          };
+        }
+
+        // Only attach sessionResumption handle if resuming the same model
+        if (resumptionHandle && activeConnectedModel === targetModel) {
           liveConfig.sessionResumption = { handle: resumptionHandle };
         }
 
@@ -191,22 +271,25 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
 
         // Session events
         session.on("open", () => {
-          addLog("WebSocket connection opened. Model setup handshake in progress...", "info");
+          addLog(`WebSocket opened for "${targetModel}". Handshake in progress...`, "info");
           setStatus("connected");
+          setActiveConnectedModel(targetModel);
           updateTutorState("listening");
         });
 
         session.on("message", (msg) => {
           if (msg.setupComplete) {
-            addLog(`Setup complete! Session ID: ${msg.setupComplete.sessionId || "active"}`, "info");
+            addLog(`Setup complete! Active model: "${targetModel}"`, "info");
           }
         });
 
         session.on("audio", (chunk: LiveAudioChunk) => {
+          flushUserTurn();
           player.playChunk(chunk.data);
         });
 
         session.on("thought", (chunk: LiveThoughtChunk) => {
+          flushUserTurn();
           updateTutorState("thinking");
           setCurrentThought((prev) => prev + chunk.text);
         });
@@ -214,6 +297,7 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
         session.on("interrupted", () => {
           addLog("User interrupted tutor (barge-in detected).", "info");
           player.interrupt();
+          flushTutorTurn(true);
           updateTutorState("listening");
         });
 
@@ -222,43 +306,19 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
           setCurrentUserText(currentUserTextRef.current);
 
           if (chunk.finished) {
-            const finalUserText = currentUserTextRef.current.trim();
-            if (finalUserText) {
-              setTurns((prev) => [
-                ...prev,
-                {
-                  id: "turn-" + Date.now() + "-user",
-                  role: "user",
-                  text: finalUserText,
-                  timestamp: Date.now(),
-                },
-              ]);
-            }
-            currentUserTextRef.current = "";
-            setCurrentUserText("");
+            flushUserTurn();
           }
         });
 
         session.on("outputTranscription", (chunk: LiveTranscriptionChunk) => {
+          flushUserTurn();
           currentTutorTextRef.current += chunk.text;
           setCurrentTutorText(currentTutorTextRef.current);
         });
 
         session.on("turnComplete", () => {
-          const finalTutorText = currentTutorTextRef.current.trim();
-          if (finalTutorText) {
-            setTurns((prev) => [
-              ...prev,
-              {
-                id: "turn-" + Date.now() + "-tutor",
-                role: "tutor",
-                text: finalTutorText,
-                timestamp: Date.now(),
-              },
-            ]);
-          }
-          currentTutorTextRef.current = "";
-          setCurrentTutorText("");
+          flushUserTurn();
+          flushTutorTurn(false);
         });
 
         session.on("resumptionUpdate", (evt) => {
@@ -281,15 +341,39 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
           addLog(msg, code && code !== 1000 ? "warn" : "info");
 
           if (code && code !== 1000) {
+            // Check if the model rejected thinkingConfig and auto-fallback!
+            if (
+              useThinking &&
+              reason &&
+              (reason.toLowerCase().includes("thinking") ||
+                reason.toLowerCase().includes("thought"))
+            ) {
+              addLog(
+                `Model "${targetModel}" does not support thinkingConfig. Automatically retrying with Thinking disabled...`,
+                "warn"
+              );
+              setEnableThinking(false);
+              setTimeout(() => {
+                connectRef.current?.({
+                  ...overrides,
+                  model: targetModel,
+                  enableThinking: false,
+                  forceReconnect: true,
+                });
+              }, 150);
+              return;
+            }
+
             setErrorMessage(
               reason
-                ? `Connection closed: ${reason} (Code ${code})`
-                : `Connection closed unexpectedly (Code ${code}). Check that model "${selectedModel}" is enabled for your API key.`
+                ? `Connection closed by server: ${reason} (Code ${code})`
+                : `Connection closed unexpectedly (Code ${code}). Verify that model "${targetModel}" supports the Gemini Live BidiGenerateContent API.`
             );
             setStatus("error");
           } else {
             setStatus("disconnected");
           }
+          setActiveConnectedModel(null);
           setTutorState("idle");
         });
 
@@ -317,7 +401,7 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
         addLog(`Connection failed: ${error.message}`, "error");
         setErrorMessage(error.message || "Failed to start speech tutor session.");
         setStatus("error");
-        await disconnect(true); // Preserve error state so user can see it!
+        await disconnect(true);
       }
     },
     [
@@ -326,33 +410,73 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
       selectedModel,
       selectedPersonaId,
       selectedVoice,
+      enableThinking,
+      customInstructions,
       resumptionHandle,
+      activeConnectedModel,
       updateTutorState,
+      flushUserTurn,
+      flushTutorTurn,
       disconnect,
       addLog,
     ]
   );
 
-  const sendText = useCallback((text: string) => {
-    if (sessionRef.current?.isConnected && text.trim()) {
-      sessionRef.current.sendText(text.trim());
-      setTurns((prev) => [
-        ...prev,
-        {
-          id: "turn-" + Date.now() + "-user",
-          role: "user",
-          text: text.trim(),
-          timestamp: Date.now(),
-        },
-      ]);
+  useEffect(() => {
+    connectRef.current = connect;
+  }, [connect]);
+
+  const toggleMute = useCallback(() => {
+    if (!recorderRef.current) return;
+    const nextMuted = !recorderRef.current.muted;
+    recorderRef.current.setMuted(nextMuted);
+    setIsMuted(nextMuted);
+    if (nextMuted && sessionRef.current?.isConnected) {
+      sessionRef.current.sendAudioStreamEnd();
+      addLog("Microphone muted.", "info");
+    } else {
+      addLog("Microphone unmuted.", "info");
     }
-  }, []);
+  }, [addLog]);
+
+  const sendText = useCallback(
+    (text: string, labelAsUserTurn: boolean = true) => {
+      if (sessionRef.current?.isConnected && text.trim()) {
+        // Interrupt any ongoing tutor speech when user sends a prompt
+        playerRef.current?.interrupt();
+        flushTutorTurn(true);
+
+        sessionRef.current.sendText(text.trim(), true);
+        addLog(`Sent text prompt: "${text.trim()}"`, "info");
+
+        if (labelAsUserTurn) {
+          setTurns((prev) => [
+            ...prev,
+            {
+              id: `turn-${Date.now()}-user`,
+              role: "user",
+              text: text.trim(),
+              timestamp: Date.now(),
+            },
+          ]);
+        }
+      }
+    },
+    [addLog, flushTutorTurn]
+  );
+
+  const requestTutorGreeting = useCallback(() => {
+    const persona = TUTOR_PERSONAS[selectedPersonaId] || TUTOR_PERSONAS.casual;
+    sendText(persona.starterPrompt, false);
+  }, [selectedPersonaId, sendText]);
 
   const clearHistory = useCallback(() => {
     setTurns([]);
     setCurrentThought("");
     setCurrentUserText("");
     setCurrentTutorText("");
+    currentUserTextRef.current = "";
+    currentTutorTextRef.current = "";
   }, []);
 
   // Cleanup on unmount
@@ -368,12 +492,19 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
     status,
     tutorState,
     errorMessage,
+    activeConnectedModel,
     selectedModel,
     setSelectedModel,
     selectedPersonaId,
     setSelectedPersonaId,
     selectedVoice,
     setSelectedVoice,
+    enableThinking,
+    setEnableThinking,
+    customInstructions,
+    setCustomInstructions,
+    isMuted,
+    toggleMute,
     userVolume,
     tutorVolume,
     currentThought,
@@ -386,6 +517,7 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
     connect,
     disconnect,
     sendText,
+    requestTutorGreeting,
     clearHistory,
     personas: TUTOR_PERSONAS,
     voices: GEMINI_LIVE_VOICES,

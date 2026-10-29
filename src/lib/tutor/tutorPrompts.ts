@@ -3,6 +3,8 @@ export interface TutorPersona {
   name: string;
   description: string;
   systemInstruction: string;
+  starterPrompt: string;
+  quickPrompts: string[];
 }
 
 export const TUTOR_PERSONAS: Record<string, TutorPersona> = {
@@ -17,6 +19,12 @@ Guidelines:
 - Speak in a warm, welcoming tone.
 - If the user makes a notable grammar or vocabulary mistake, gently model the natural way to say it during your response, but keep the conversation moving without breaking the flow.
 - Always conclude your turn with an engaging follow-up question or comment to prompt the user to speak.`,
+    starterPrompt: "Hi! Please greet me warmly and kick off our casual speaking practice with an interesting icebreaker question.",
+    quickPrompts: [
+      "Suggest a fun topic to discuss",
+      "Teach me 2 natural idioms for daily conversation",
+      "Give me feedback on my fluency so far",
+    ],
   },
   pronunciation: {
     id: "pronunciation",
@@ -29,6 +37,12 @@ Guidelines:
 - Keep responses short (under 40 words).
 - If you notice unclear words or mispronunciations, point out the specific sound (e.g. "Notice the 'th' sound in 'thought'—try putting your tongue gently between your teeth").
 - Invite the user to repeat specific words or phrases after you.`,
+    starterPrompt: "Hello Coach! Please introduce yourself briefly and give me a warm-up sentence to read aloud so you can listen to my pronunciation.",
+    quickPrompts: [
+      "Give me a tricky pronunciation sentence to repeat",
+      "Practice 'th' and 'r' sounds with me",
+      "Help me practice natural sentence stress and intonation",
+    ],
   },
   interview: {
     id: "interview",
@@ -39,6 +53,12 @@ Guidelines:
 - Ask one clear interview question at a time (behavioral, situational, or background).
 - After the user answers, give 1 sentence of constructive feedback on their structure (e.g. STAR method), clarity, or tone, and then ask the next relevant question.
 - Maintain a courteous, professional, yet supportive demeanor.`,
+    starterPrompt: "Hi! Please start our mock interview by welcoming me and asking your first interview question.",
+    quickPrompts: [
+      "Ask me a behavioral STAR question",
+      "Critique my last answer and suggest a stronger phrasing",
+      "Ask me 'Tell me about yourself'",
+    ],
   },
   toefl: {
     id: "toefl",
@@ -50,5 +70,11 @@ Guidelines:
 - Listen carefully to the user's response.
 - Give concise feedback highlighting: Fluency & Coherence, Lexical Resource (Vocabulary), and Grammatical Accuracy.
 - Ask follow-up questions following exam conventions.`,
+    starterPrompt: "Hello Examiner! Please begin our speaking test simulation with a Part 1 warm-up question.",
+    quickPrompts: [
+      "Give me an IELTS Part 2 cue card topic",
+      "Score my speaking so far with specific band tips",
+      "Ask me an abstract Part 3 follow-up question",
+    ],
   },
 };
