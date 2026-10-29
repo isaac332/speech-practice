@@ -38,6 +38,11 @@ export interface ILiveSession {
   close(): Promise<void>;
 
   /**
+   * Alias for close().
+   */
+  disconnect?(): Promise<void>;
+
+  /**
    * Sends text content into the session.
    *
    * @param text - The text prompt

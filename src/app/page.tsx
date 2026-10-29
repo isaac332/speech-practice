@@ -22,6 +22,7 @@ import {
   Play,
   Sliders,
   Clock,
+  Languages,
 } from "lucide-react";
 import { useGeminiSpeechTutor } from "../hooks/useGeminiSpeechTutor";
 import { AudioVisualizer } from "../components/AudioVisualizer";
@@ -46,6 +47,22 @@ function getSavedModelSnapshot() {
 
 function getSavedModelServerSnapshot() {
   return "gemini-3.8-live";
+}
+
+function getSavedTargetLangSnapshot() {
+  return localStorage.getItem("gemini_live_target_lang") || "Spanish";
+}
+
+function getSavedTargetLangServerSnapshot() {
+  return "Spanish";
+}
+
+function getSavedNativeLangSnapshot() {
+  return localStorage.getItem("gemini_live_native_lang") || "English";
+}
+
+function getSavedNativeLangServerSnapshot() {
+  return "English";
 }
 
 const SUGGESTED_LIVE_MODELS = [
@@ -88,6 +105,16 @@ export default function Home() {
     getSavedModelSnapshot,
     getSavedModelServerSnapshot
   );
+  const storedTargetLang = useSyncExternalStore(
+    subscribeStorage,
+    getSavedTargetLangSnapshot,
+    getSavedTargetLangServerSnapshot
+  );
+  const storedNativeLang = useSyncExternalStore(
+    subscribeStorage,
+    getSavedNativeLangSnapshot,
+    getSavedNativeLangServerSnapshot
+  );
 
   const [customApiKey, setCustomApiKey] = useState<string | null>(null);
   const apiKey = customApiKey !== null ? customApiKey : storedApiKey;
@@ -113,6 +140,13 @@ export default function Home() {
     setSelectedPersonaId,
     selectedVoice,
     setSelectedVoice,
+    selectedTargetLanguage,
+    setSelectedTargetLanguage,
+    selectedNativeLanguage,
+    setSelectedNativeLanguage,
+    activeConnectedTargetLanguage,
+    activeConnectedNativeLanguage,
+    commonLanguages,
     enableThinking,
     setEnableThinking,
     customInstructions,
@@ -135,9 +169,12 @@ export default function Home() {
     clearHistory,
     personas,
     voices,
+    getQuickPrompts,
   } = useGeminiSpeechTutor({
     apiKey: apiKey || process.env.NEXT_PUBLIC_GEMINI_API_KEY,
     model: storedModel,
+    initialTargetLanguage: storedTargetLang,
+    initialNativeLanguage: storedNativeLang,
   });
 
   const isConnected = status === "connected";
@@ -149,6 +186,8 @@ export default function Home() {
     Boolean(trimmedModel) &&
     Boolean(activeConnectedModel) &&
     trimmedModel !== activeConnectedModel;
+
+  const quickPromptsList = getQuickPrompts();
 
   const handleApiKeyChange = (key: string) => {
     setCustomApiKey(key);
@@ -172,6 +211,34 @@ export default function Home() {
       connect({
         apiKey,
         model: targetModel,
+        forceReconnect: true,
+      });
+    }
+  };
+
+  const handleTargetLanguageChange = (lang: string) => {
+    setSelectedTargetLanguage(lang);
+    if (typeof window !== "undefined" && lang.trim()) {
+      localStorage.setItem("gemini_live_target_lang", lang.trim());
+    }
+    if (isConnected) {
+      connect({
+        apiKey,
+        targetLanguage: lang.trim(),
+        forceReconnect: true,
+      });
+    }
+  };
+
+  const handleNativeLanguageChange = (lang: string) => {
+    setSelectedNativeLanguage(lang);
+    if (typeof window !== "undefined" && lang.trim()) {
+      localStorage.setItem("gemini_live_native_lang", lang.trim());
+    }
+    if (isConnected) {
+      connect({
+        apiKey,
+        nativeLanguage: lang.trim(),
         forceReconnect: true,
       });
     }
@@ -239,7 +306,12 @@ export default function Home() {
       disconnect();
     } else {
       setSessionSeconds(0);
-      connect({ apiKey, model: trimmedModel || "gemini-3.8-live" });
+      connect({
+        apiKey,
+        model: trimmedModel || "gemini-3.8-live",
+        targetLanguage: selectedTargetLanguage,
+        nativeLanguage: selectedNativeLanguage,
+      });
     }
   };
 
@@ -273,8 +345,12 @@ export default function Home() {
     if (turns.length === 0) return;
     const header = `Gemini Live Speech Tutor Transcript\nModel: ${
       activeConnectedModel || selectedModel
+    }\nTarget Practice Language: ${
+      activeConnectedTargetLanguage || selectedTargetLanguage
+    }\nFallback (Native) Language: ${
+      activeConnectedNativeLanguage || selectedNativeLanguage
     }\nMode: ${activePersona.name}\nDate: ${new Date().toLocaleString()}\n${"=".repeat(
-      48
+      52
     )}\n\n`;
     const body = turns
       .map(
@@ -288,7 +364,9 @@ export default function Home() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `speech-practice-${new Date().toISOString().slice(0, 10)}.txt`;
+    a.download = `speech-practice-${(selectedTargetLanguage || "practice").toLowerCase()}-${new Date()
+      .toISOString()
+      .slice(0, 10)}.txt`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -308,6 +386,13 @@ export default function Home() {
             <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-500 dark:text-zinc-400">
               <span className="font-mono text-[11px] text-indigo-600 dark:text-indigo-400">
                 {activeConnectedModel || selectedModel || "gemini-3.8-live"}
+              </span>
+              <span>•</span>
+              <span className="font-semibold text-emerald-600 dark:text-emerald-400">
+                Practice: {activeConnectedTargetLanguage || selectedTargetLanguage}
+              </span>
+              <span className="hidden sm:inline text-zinc-400">
+                (Fallback: {activeConnectedNativeLanguage || selectedNativeLanguage})
               </span>
               <span>•</span>
               <span>{activePersona.name}</span>
@@ -358,6 +443,7 @@ export default function Home() {
 
           {/* Diagnostics toggle */}
           <button
+            type="button"
             onClick={() => setShowLogs((prev) => !prev)}
             aria-label="Toggle Diagnostics"
             title="Toggle Live Connection Logs"
@@ -372,6 +458,7 @@ export default function Home() {
           </button>
 
           <button
+            type="button"
             onClick={() => setShowSettings((prev) => !prev)}
             aria-label="API Key & Advanced Settings"
             title="API Key & Advanced Settings"
@@ -389,9 +476,9 @@ export default function Home() {
 
       {/* Main Grid Workspace */}
       <main className="mx-auto flex w-full max-w-6xl flex-1 flex-col gap-6 p-4 lg:flex-row lg:p-6">
-        {/* Left Column: Model Bar, Visualizer, Controls, Persona */}
+        {/* Left Column: Model Bar, Languages, Visualizer, Persona */}
         <section className="flex flex-1 flex-col gap-5 lg:max-w-md">
-          {/* On-the-Fly Model Input Card (Always accessible!) */}
+          {/* On-the-Fly Model Input Card */}
           <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
             <div className="mb-2 flex items-center justify-between">
               <label
@@ -474,6 +561,140 @@ export default function Home() {
                   </button>
                 );
               })}
+            </div>
+          </div>
+
+          {/* Language Practice Directive Card */}
+          <div className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="mb-2.5 flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Languages className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
+                <span className="text-xs font-semibold uppercase tracking-wider text-zinc-700 dark:text-zinc-300">
+                  Language Practice Directive
+                </span>
+              </div>
+              {isConnected && (
+                <span className="rounded-md bg-emerald-50 px-2 py-0.5 font-mono text-[10px] font-semibold text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300">
+                  Active: {activeConnectedTargetLanguage || selectedTargetLanguage}
+                </span>
+              )}
+            </div>
+
+            <p className="mb-3 text-[11px] text-zinc-500 dark:text-zinc-400 leading-relaxed">
+              The model <strong>must speak and converse in your practice language</strong>, and uses your <strong>fallback native language</strong> for translations, grammar explanations, or when you ask for help.
+            </p>
+
+            <div className="space-y-3">
+              {/* Target Language */}
+              <div>
+                <div className="mb-1 flex items-center justify-between">
+                  <label
+                    htmlFor="target-language-input"
+                    className="text-xs font-semibold text-zinc-700 dark:text-zinc-300"
+                  >
+                    Target Practice Language
+                  </label>
+                  <span className="text-[10px] font-medium text-emerald-600 dark:text-emerald-400">
+                    Model responds in this
+                  </span>
+                </div>
+                <div className="relative">
+                  <input
+                    id="target-language-input"
+                    type="text"
+                    list="target-languages-list"
+                    value={selectedTargetLanguage}
+                    onChange={(e) => handleTargetLanguageChange(e.target.value)}
+                    placeholder="e.g. Spanish, French, Japanese, German..."
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="words"
+                    spellCheck={false}
+                    className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-medium text-zinc-900 placeholder:text-zinc-400 focus:border-indigo-500 focus:bg-white focus:outline-none dark:border-zinc-700 dark:bg-zinc-800/90 dark:text-zinc-100"
+                  />
+                  <datalist id="target-languages-list">
+                    {commonLanguages.map((lang) => (
+                      <option key={lang.code} value={lang.name}>
+                        {lang.nativeName}
+                      </option>
+                    ))}
+                  </datalist>
+                </div>
+
+                {/* Target Language Quick Pills */}
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {commonLanguages.slice(0, 6).map((lang) => {
+                    const isSelected =
+                      selectedTargetLanguage.trim().toLowerCase() ===
+                      lang.name.toLowerCase();
+                    return (
+                      <button
+                        key={lang.code}
+                        type="button"
+                        onClick={() => handleTargetLanguageChange(lang.name)}
+                        className={`rounded-lg px-2.5 py-1 text-xs transition-all ${
+                          isSelected
+                            ? "bg-indigo-600 font-semibold text-white shadow-sm"
+                            : "border border-zinc-200 bg-zinc-50 text-zinc-600 hover:border-zinc-300 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-800/50 dark:text-zinc-300"
+                        }`}
+                      >
+                        {lang.name}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Native / Fallback Language */}
+              <div className="border-t border-zinc-100 pt-3 dark:border-zinc-800">
+                <div className="mb-1 flex items-center justify-between">
+                  <label
+                    htmlFor="native-language-input"
+                    className="text-xs font-semibold text-zinc-700 dark:text-zinc-300"
+                  >
+                    Fallback / Native Language
+                  </label>
+                  <span className="text-[10px] font-medium text-zinc-400">
+                    For translations & explanations
+                  </span>
+                </div>
+                <div className="relative">
+                  <input
+                    id="native-language-input"
+                    type="text"
+                    list="native-languages-list"
+                    value={selectedNativeLanguage}
+                    onChange={(e) => handleNativeLanguageChange(e.target.value)}
+                    placeholder="e.g. English, Spanish..."
+                    autoComplete="off"
+                    autoCorrect="off"
+                    autoCapitalize="words"
+                    spellCheck={false}
+                    className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-medium text-zinc-900 placeholder:text-zinc-400 focus:border-indigo-500 focus:bg-white focus:outline-none dark:border-zinc-700 dark:bg-zinc-800/90 dark:text-zinc-100"
+                  />
+                  <datalist id="native-languages-list">
+                    {commonLanguages.map((lang) => (
+                      <option key={lang.code} value={lang.name}>
+                        {lang.nativeName}
+                      </option>
+                    ))}
+                  </datalist>
+                </div>
+              </div>
+
+              {/* Directive Summary */}
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50/60 p-2.5 text-xs text-indigo-900 dark:border-indigo-900/40 dark:bg-indigo-950/30 dark:text-indigo-200">
+                {selectedTargetLanguage.trim().toLowerCase() ===
+                selectedNativeLanguage.trim().toLowerCase() ? (
+                  <span>
+                    Full immersion in <strong>{selectedTargetLanguage || "English"}</strong>.
+                  </span>
+                ) : (
+                  <span>
+                    Tutor speaks primarily in <strong>{selectedTargetLanguage || "Spanish"}</strong> and explains difficult concepts, vocabulary, or grammar in <strong>{selectedNativeLanguage || "English"}</strong>.
+                  </span>
+                )}
+              </div>
             </div>
           </div>
 
@@ -576,12 +797,12 @@ export default function Home() {
                 ) : isConnecting ? (
                   <>
                     <RefreshCw className="h-5 w-5 animate-spin" />
-                    <span>Connecting to {trimmedModel || "Gemini"}...</span>
+                    <span>Connecting to {selectedTargetLanguage} Practice...</span>
                   </>
                 ) : (
                   <>
                     <Mic className="h-5 w-5" />
-                    <span>Start Practice Session</span>
+                    <span>Start Practice Session ({selectedTargetLanguage})</span>
                   </>
                 )}
               </button>
@@ -613,7 +834,7 @@ export default function Home() {
 
                   <button
                     type="button"
-                    onClick={requestTutorGreeting}
+                    onClick={() => requestTutorGreeting()}
                     className="flex items-center justify-center gap-2 rounded-xl border border-indigo-200 bg-indigo-50/70 px-3 py-2.5 text-xs font-semibold text-indigo-700 transition-all hover:bg-indigo-100 dark:border-indigo-900/60 dark:bg-indigo-950/40 dark:text-indigo-300 dark:hover:bg-indigo-950/70"
                   >
                     <Play className="h-3.5 w-3.5 fill-current" />
@@ -652,6 +873,8 @@ export default function Home() {
                       connect({
                         apiKey,
                         model: trimmedModel || "gemini-3.8-live",
+                        targetLanguage: selectedTargetLanguage,
+                        nativeLanguage: selectedNativeLanguage,
                         forceReconnect: true,
                       })
                     }
@@ -736,7 +959,7 @@ export default function Home() {
                       });
                     }
                   }}
-                  placeholder="e.g. Ordering at a Tokyo cafe, salary negotiation..."
+                  placeholder="e.g. Ordering at a cafe, salary negotiation..."
                   className="w-full rounded-xl border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-indigo-500 focus:bg-white focus:outline-none dark:border-zinc-800 dark:bg-zinc-800 dark:text-zinc-100"
                 />
                 {isConnected && customInstructions.trim() && (
@@ -928,25 +1151,25 @@ export default function Home() {
             {turns.length === 0 && !currentUserText && !currentTutorText && (
               <div className="flex flex-1 flex-col items-center justify-center text-center text-zinc-400">
                 <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-2xl bg-zinc-100 text-zinc-400 dark:bg-zinc-800/80 dark:text-zinc-500">
-                  <Mic className="h-6 w-6 stroke-1.5" />
+                  <Languages className="h-6 w-6 stroke-1.5" />
                 </div>
                 <p className="text-sm font-semibold text-zinc-600 dark:text-zinc-300">
-                  Ready for {activePersona.name}
+                  Ready for {selectedTargetLanguage} Practice
                 </p>
                 <p className="mt-1 max-w-xs text-xs text-zinc-400">
                   {isConnected
-                    ? "Start speaking into your microphone, click 'Tutor Speak First', or pick a starter prompt below."
-                    : "Start a practice session and speak naturally, or type any Gemini model ID on the left to test different models."}
+                    ? `Speak in ${selectedTargetLanguage}. If you get stuck or need explanations, you can speak or ask questions in ${selectedNativeLanguage}.`
+                    : `Press "Start Practice Session" to speak in ${selectedTargetLanguage}. You can change languages anytime.`}
                 </p>
 
                 {isConnected && (
                   <button
                     type="button"
-                    onClick={requestTutorGreeting}
+                    onClick={() => requestTutorGreeting()}
                     className="mt-4 flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-sm transition-all hover:bg-indigo-700"
                   >
                     <Play className="h-3.5 w-3.5 fill-current" />
-                    <span>Have Tutor Start the Conversation</span>
+                    <span>Have Tutor Greet You in {selectedTargetLanguage}</span>
                   </button>
                 )}
               </div>
@@ -1005,7 +1228,7 @@ export default function Home() {
             {currentTutorText && (
               <div className="flex flex-col items-start">
                 <span className="mb-1 text-[11px] font-semibold text-purple-500 animate-pulse">
-                  Tutor speaking...
+                  Tutor speaking ({selectedTargetLanguage})...
                 </span>
                 <div className="max-w-[85%] rounded-2xl rounded-bl-none bg-zinc-100 px-4 py-2.5 text-sm text-zinc-900 dark:bg-zinc-800 dark:text-zinc-100">
                   {currentTutorText}
@@ -1021,7 +1244,7 @@ export default function Home() {
               <span className="text-[11px] font-medium text-zinc-400 mr-1">
                 Quick prompts:
               </span>
-              {activePersona.quickPrompts.map((promptText, idx) => (
+              {quickPromptsList.map((promptText, idx) => (
                 <button
                   key={idx}
                   type="button"
@@ -1053,8 +1276,8 @@ export default function Home() {
                 }}
                 placeholder={
                   isConnected
-                    ? "Type a message, phrase, or topic to send to the live tutor..."
-                    : "Start a practice session to speak or send text messages..."
+                    ? `Type in ${selectedTargetLanguage} or ask for help in ${selectedNativeLanguage}...`
+                    : `Start a practice session to speak or send text messages...`
                 }
                 className="flex-1 rounded-xl border border-zinc-200 bg-zinc-50 px-3.5 py-2.5 text-xs text-zinc-900 placeholder:text-zinc-400 focus:border-indigo-500 focus:bg-white focus:outline-none disabled:cursor-not-allowed disabled:opacity-60 dark:border-zinc-800 dark:bg-zinc-800/90 dark:text-zinc-100"
               />

@@ -308,6 +308,13 @@ export class GeminiLiveSession
   }
 
   /**
+   * Alias for close().
+   */
+  public async disconnect(): Promise<void> {
+    return this.close();
+  }
+
+  /**
    * Sends text content into the session.
    */
   public sendText(text: string, turnComplete: boolean = true): void {

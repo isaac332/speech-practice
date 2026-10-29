@@ -11,7 +11,13 @@ import {
 } from "@llm-multi-provider/core/live";
 import { AudioRecorder } from "../lib/audio/AudioRecorder";
 import { AudioPlayer } from "../lib/audio/AudioPlayer";
-import { TUTOR_PERSONAS } from "../lib/tutor/tutorPrompts";
+import {
+  TUTOR_PERSONAS,
+  COMMON_PRACTICE_LANGUAGES,
+  buildTutorSystemInstruction,
+  getStarterPrompt,
+  getQuickPrompts,
+} from "../lib/tutor/tutorPrompts";
 
 export type TutorStatus = "disconnected" | "connecting" | "connected" | "error";
 export type TutorState = "idle" | "listening" | "thinking" | "speaking";
@@ -36,6 +42,8 @@ export interface ConnectOverrides {
   model?: string;
   personaId?: string;
   voice?: GeminiLiveVoice;
+  targetLanguage?: string;
+  nativeLanguage?: string;
   enableThinking?: boolean;
   customInstructions?: string;
   forceReconnect?: boolean;
@@ -44,6 +52,8 @@ export interface ConnectOverrides {
 export interface UseGeminiSpeechTutorOptions {
   initialPersonaId?: string;
   initialVoice?: GeminiLiveVoice;
+  initialTargetLanguage?: string;
+  initialNativeLanguage?: string;
   apiKey?: string;
   model?: string;
 }
@@ -51,11 +61,16 @@ export interface UseGeminiSpeechTutorOptions {
 export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
   const optionApiKey = options?.apiKey;
   const optionModel = options?.model;
+  const optionInitialTargetLang = options?.initialTargetLanguage;
+  const optionInitialNativeLang = options?.initialNativeLanguage;
 
   const [status, setStatus] = useState<TutorStatus>("disconnected");
   const [tutorState, setTutorState] = useState<TutorState>("idle");
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
   const [activeConnectedModel, setActiveConnectedModel] = useState<string | null>(null);
+  const [activeConnectedTargetLanguage, setActiveConnectedTargetLanguage] = useState<string | null>(null);
+  const [activeConnectedNativeLanguage, setActiveConnectedNativeLanguage] = useState<string | null>(null);
 
   const [selectedModel, setSelectedModel] = useState<string>(
     optionModel || process.env.NEXT_PUBLIC_GEMINI_LIVE_MODEL || "gemini-3.8-live"
@@ -65,6 +80,12 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
   );
   const [selectedVoice, setSelectedVoice] = useState<GeminiLiveVoice>(
     options?.initialVoice || GEMINI_LIVE_VOICES.AOEDE
+  );
+  const [selectedTargetLanguage, setSelectedTargetLanguage] = useState<string>(
+    optionInitialTargetLang || "Spanish"
+  );
+  const [selectedNativeLanguage, setSelectedNativeLanguage] = useState<string>(
+    optionInitialNativeLang || "English"
   );
   const [enableThinking, setEnableThinking] = useState<boolean>(true);
   const [customInstructions, setCustomInstructions] = useState<string>("");
@@ -115,7 +136,7 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
       setTurns((prev) => [
         ...prev,
         {
-          id: `turn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}-user`,
+          id: `turn-${Date.now()}-user`,
           role: "user",
           text: finalUserText,
           timestamp: Date.now(),
@@ -132,7 +153,7 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
       setTurns((prev) => [
         ...prev,
         {
-          id: `turn-${Date.now()}-${Math.random().toString(36).slice(2, 6)}-tutor`,
+          id: `turn-${Date.now()}-tutor`,
           role: "tutor",
           text: finalTutorText,
           timestamp: Date.now(),
@@ -151,21 +172,23 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
         recorderRef.current = null;
       }
       if (playerRef.current) {
-        playerRef.current.close();
+        playerRef.current.interrupt();
         playerRef.current = null;
       }
       if (sessionRef.current) {
         await sessionRef.current.close();
         sessionRef.current = null;
       }
-    } catch (err) {
-      console.warn("[SpeechTutor] Error disconnecting session:", err);
+    } catch (e) {
+      console.warn("[SpeechTutor] Error while disconnecting:", e);
     } finally {
       if (!preserveError) {
         setStatus("disconnected");
         setErrorMessage(null);
       }
       setActiveConnectedModel(null);
+      setActiveConnectedTargetLanguage(null);
+      setActiveConnectedNativeLanguage(null);
       setTutorState("idle");
       setIsMuted(false);
       setUserVolume(0);
@@ -183,7 +206,7 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
       }
 
       if (overrides.forceReconnect && (status === "connecting" || status === "connected")) {
-        addLog("Switching configuration on the fly — closing previous session...", "info");
+        addLog("Updating configuration on the fly — reconnecting live session...", "info");
         await disconnect(false);
       }
 
@@ -197,6 +220,8 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
       const targetModel = (overrides.model ?? selectedModel).trim() || "gemini-3.8-live";
       const targetPersonaId = overrides.personaId ?? selectedPersonaId;
       const targetVoice = overrides.voice ?? selectedVoice;
+      const targetLang = (overrides.targetLanguage ?? selectedTargetLanguage).trim() || "Spanish";
+      const nativeLang = (overrides.nativeLanguage ?? selectedNativeLanguage).trim() || "English";
       const useThinking = overrides.enableThinking ?? enableThinking;
       const extraInstructions = (overrides.customInstructions ?? customInstructions).trim();
 
@@ -218,13 +243,19 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
       currentUserTextRef.current = "";
       currentTutorTextRef.current = "";
 
-      addLog(`Connecting session to Gemini Live API with model "${targetModel}"...`, "info");
+      addLog(
+        `Connecting session to Gemini Live API with model "${targetModel}" [Practice: ${targetLang}, Fallback: ${nativeLang}]...`,
+        "info"
+      );
 
       try {
         const persona = TUTOR_PERSONAS[targetPersonaId] || TUTOR_PERSONAS.casual;
-        const fullSystemInstruction = extraInstructions
-          ? `${persona.systemInstruction}\n\nAdditional Practice Scenario / Context:\n${extraInstructions}`
-          : persona.systemInstruction;
+        const fullSystemInstruction = buildTutorSystemInstruction({
+          persona,
+          targetLanguage: targetLang,
+          nativeLanguage: nativeLang,
+          customContext: extraInstructions,
+        });
 
         // Initialize Audio Player
         addLog("Initializing Web Audio Player (24kHz PCM)...", "info");
@@ -260,8 +291,12 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
           };
         }
 
-        // Only attach sessionResumption handle if resuming the same model
-        if (resumptionHandle && activeConnectedModel === targetModel) {
+        // Only attach sessionResumption handle if resuming the exact same model & languages
+        if (
+          resumptionHandle &&
+          activeConnectedModel === targetModel &&
+          activeConnectedTargetLanguage === targetLang
+        ) {
           liveConfig.sessionResumption = { handle: resumptionHandle };
         }
 
@@ -271,15 +306,23 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
 
         // Session events
         session.on("open", () => {
-          addLog(`WebSocket opened for "${targetModel}". Handshake in progress...`, "info");
+          addLog(
+            `WebSocket opened for "${targetModel}" (${targetLang}). Handshake in progress...`,
+            "info"
+          );
           setStatus("connected");
           setActiveConnectedModel(targetModel);
+          setActiveConnectedTargetLanguage(targetLang);
+          setActiveConnectedNativeLanguage(nativeLang);
           updateTutorState("listening");
         });
 
         session.on("message", (msg) => {
           if (msg.setupComplete) {
-            addLog(`Setup complete! Active model: "${targetModel}"`, "info");
+            addLog(
+              `Setup complete! Active model: "${targetModel}", Target Language: "${targetLang}", Fallback: "${nativeLang}"`,
+              "info"
+            );
           }
         });
 
@@ -341,7 +384,7 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
           addLog(msg, code && code !== 1000 ? "warn" : "info");
 
           if (code && code !== 1000) {
-            // Check if the model rejected thinkingConfig and auto-fallback!
+            // Check if the model rejected thinkingConfig and auto-fallback
             if (
               useThinking &&
               reason &&
@@ -357,6 +400,8 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
                 connectRef.current?.({
                   ...overrides,
                   model: targetModel,
+                  targetLanguage: targetLang,
+                  nativeLanguage: nativeLang,
                   enableThinking: false,
                   forceReconnect: true,
                 });
@@ -374,6 +419,8 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
             setStatus("disconnected");
           }
           setActiveConnectedModel(null);
+          setActiveConnectedTargetLanguage(null);
+          setActiveConnectedNativeLanguage(null);
           setTutorState("idle");
         });
 
@@ -410,10 +457,13 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
       selectedModel,
       selectedPersonaId,
       selectedVoice,
+      selectedTargetLanguage,
+      selectedNativeLanguage,
       enableThinking,
       customInstructions,
       resumptionHandle,
       activeConnectedModel,
+      activeConnectedTargetLanguage,
       updateTutorState,
       flushUserTurn,
       flushTutorTurn,
@@ -465,10 +515,20 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
     [addLog, flushTutorTurn]
   );
 
-  const requestTutorGreeting = useCallback(() => {
-    const persona = TUTOR_PERSONAS[selectedPersonaId] || TUTOR_PERSONAS.casual;
-    sendText(persona.starterPrompt, false);
-  }, [selectedPersonaId, sendText]);
+  const requestTutorGreeting = useCallback(
+    (greetingOverride?: string) => {
+      const persona = TUTOR_PERSONAS[selectedPersonaId] || TUTOR_PERSONAS.casual;
+      const prompt =
+        greetingOverride ||
+        getStarterPrompt(persona, selectedTargetLanguage, selectedNativeLanguage);
+      sendText(prompt, false);
+      addLog(
+        `Requested tutor greeting in ${selectedTargetLanguage} (fallback: ${selectedNativeLanguage})...`,
+        "info"
+      );
+    },
+    [selectedPersonaId, selectedTargetLanguage, selectedNativeLanguage, sendText, addLog]
+  );
 
   const clearHistory = useCallback(() => {
     setTurns([]);
@@ -479,26 +539,24 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
     currentTutorTextRef.current = "";
   }, []);
 
-  // Cleanup on unmount
-  useEffect(() => {
-    return () => {
-      if (recorderRef.current) recorderRef.current.stop();
-      if (playerRef.current) playerRef.current.close();
-      if (sessionRef.current) sessionRef.current.close();
-    };
-  }, []);
-
   return {
     status,
     tutorState,
     errorMessage,
-    activeConnectedModel,
     selectedModel,
     setSelectedModel,
+    activeConnectedModel,
     selectedPersonaId,
     setSelectedPersonaId,
     selectedVoice,
     setSelectedVoice,
+    selectedTargetLanguage,
+    setSelectedTargetLanguage,
+    selectedNativeLanguage,
+    setSelectedNativeLanguage,
+    activeConnectedTargetLanguage,
+    activeConnectedNativeLanguage,
+    commonLanguages: COMMON_PRACTICE_LANGUAGES,
     enableThinking,
     setEnableThinking,
     customInstructions,
@@ -516,10 +574,14 @@ export function useGeminiSpeechTutor(options?: UseGeminiSpeechTutorOptions) {
     clearLogs,
     connect,
     disconnect,
-    sendText,
     requestTutorGreeting,
+    sendText,
     clearHistory,
     personas: TUTOR_PERSONAS,
     voices: GEMINI_LIVE_VOICES,
+    getQuickPrompts: (personaId?: string) => {
+      const p = TUTOR_PERSONAS[personaId || selectedPersonaId] || TUTOR_PERSONAS.casual;
+      return getQuickPrompts(p, selectedTargetLanguage, selectedNativeLanguage);
+    },
   };
 }
